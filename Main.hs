@@ -8,15 +8,22 @@ import qualified Data.Vector as V
 
 import qualified Codec.Picture as P
 
+import System.Environment
 import System.FilePath
 import System.Directory
+
+--------------------------------------------------------------------------------
+
+type Label     = Word8
+
+type GrayImage = B.ByteString
 
 data MNIST = MNIST
   { nrOfImages :: Int
   , imgWidth   :: Int
   , imgHeight  :: Int
-  , mnistLabel :: Int -> Word8
-  , mnistImage :: Int -> B.ByteString
+  , mnistLabel :: Int -> Label
+  , mnistImage :: Int -> GrayImage
   }
 
 load :: IO MNIST
@@ -29,13 +36,13 @@ load = do
   
 --------------------------------------------------------------------------------
 
-toImage :: Int -> B.ByteString -> P.Image P.Pixel8
+toImage :: Int -> GrayImage -> P.Image P.Pixel8
 toImage zoom str = P.generateImage (\ x y -> str `B.index` (28*(y `quot` zoom) + (x `quot` zoom))) (28 * zoom) (28 * zoom)
 
 dir :: FilePath
 dir = "/dev/shm"
 
-writeToFile :: B.ByteString -> IO ()
+writeToFile :: GrayImage -> IO ()
 writeToFile str = do
   let fName = dir </> "digit.png"
   L.writeFile (fName <.> "part") . P.encodePng . toImage 20 $ str
@@ -48,36 +55,83 @@ writeAll = do
                      . filter ((== 2) . mnistLabel mnist)
                      $ [0..60000-1]
 
-cycleThroughImages :: [B.ByteString] -> IO ()
+cycleThroughImages :: [GrayImage] -> IO ()
 cycleThroughImages xs = do
   mapM_ (\ img -> threadDelay 1000000 >> writeToFile img) $ xs
   cycleThroughImages xs
   
 --------------------------------------------------------------------------------
 
-toFloatImage :: B.ByteString -> V.Vector Double
+type FloatImage = V.Vector Double
+
+toFloatImage :: GrayImage -> FloatImage
 toFloatImage str = V.fromList . map fromIntegral . B.unpack $ str
 
-fromFloatImage :: V.Vector Double -> B.ByteString
+fromFloatImage :: FloatImage -> GrayImage
 fromFloatImage = B.pack . map round . V.toList
 
-addImages :: V.Vector Double -> V.Vector Double -> V.Vector Double
+addImages :: FloatImage -> FloatImage -> FloatImage
 addImages a b = V.zipWith (+) a b
 
-average :: MNIST -> [Int] -> B.ByteString
-average mnist xs =
-  let xss = map (toFloatImage . mnistImage mnist) xs
-      sum = foldr addImages (V.replicate (28*28) 0.0) xss
+average :: [FloatImage] -> FloatImage
+average [] = V.replicate (28*28) 0.0
+average xs =
+  let sum = foldr addImages (V.replicate (28*28) 0.0) xs
       nr  = length xs
-  in fromFloatImage . V.map (/ fromIntegral nr) $ sum
+  in V.map (/ fromIntegral nr) $ sum
 
-onlyLabel :: Word8 -> MNIST -> [Int]
+average' :: MNIST -> [Int] -> GrayImage
+average' mnist xs =
+  fromFloatImage . average . map (toFloatImage . mnistImage mnist) $ xs
+
+average'' :: MNIST -> [Int] -> FloatImage
+average'' mnist xs = average . map (toFloatImage . mnistImage mnist) $ xs
+
+onlyLabel :: Label -> MNIST -> [Int]
 onlyLabel x mnist = filter ((== x) . mnistLabel mnist) [0..60000-1]
 
-computeAverages :: MNIST -> [B.ByteString]
-computeAverages mnist = map (\ x -> average mnist . onlyLabel x $ mnist) [0..9]
+computeAverages' :: MNIST -> [GrayImage]
+computeAverages' mnist = map (\ x -> average' mnist . onlyLabel x $ mnist) [0..9]
+
+computeAverages :: MNIST -> [FloatImage]
+computeAverages mnist = map (\ x -> average'' mnist . onlyLabel x $ mnist) [0..9]
 
 --------------------------------------------------------------------------------
 
 main :: IO ()
-main = cycleThroughImages . computeAverages =<< load
+main = do
+  args <- getArgs
+  case args of
+    [ "average" ] -> cycleThroughImages . computeAverages' =<< load
+    [ "simple"  ] -> testInnerProduct
+
+--------------------------------------------------------------------------------
+
+innerProduct :: FloatImage -> FloatImage -> Double
+innerProduct i1 i2 = V.foldr (+) 0 (V.zipWith (*) i1 i2)
+
+testInnerProduct = do
+  mnist <- load
+  let as = computeAverages mnist
+      rs d = map (\ i -> toFloatImage . mnistImage mnist $ i) . onlyLabel d $ mnist
+      zs = [ (print (x, d, statistics . map (innerProduct (as!!x)) $ rs d)) | x <- [0..9], d <- [0..9] ]
+  sequence_ zs
+
+mean :: [Double] -> Double
+mean [] = undefined
+mean xs = sum xs / (fromIntegral . length $ xs)
+
+deviation :: [Double] -> Double
+deviation [] = undefined
+deviation [_] = 0
+deviation xs = sqrt . (/ (fromIntegral . length $ xs)) . sum . map ((\ x -> x*x) . (\ x -> x - m)) $ xs
+  where
+    m = mean xs
+
+data Statistics = Statistics
+  { st_populationMean      :: Double
+  , st_populationDeviation :: Double
+  } deriving Show
+  
+statistics :: [Double] -> Statistics
+statistics xs = Statistics (mean xs) (deviation xs)
