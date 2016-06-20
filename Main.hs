@@ -12,6 +12,8 @@ import System.Environment
 import System.FilePath
 import System.Directory
 
+import Graphics.Gloss
+
 --------------------------------------------------------------------------------
 
 type Label     = Word8
@@ -104,6 +106,9 @@ main = do
   case args of
     [ "average" ] -> cycleThroughImages . computeAverages' =<< load
     [ "simple"  ] -> testInnerProduct
+    [ "testGraphics1" ] -> testGraphics1 [0..60000-1]
+    [ "testGraphics2" ] -> testGraphics2 [0..60000-1]
+    [ "testGraphics3" ] -> testGraphics3
 
 --------------------------------------------------------------------------------
 
@@ -135,3 +140,59 @@ data Statistics = Statistics
   
 statistics :: [Double] -> Statistics
 statistics xs = Statistics (mean xs) (deviation xs)
+
+--------------------------------------------------------------------------------
+
+testGraphics1 :: [Int] -> IO ()
+testGraphics1 xs = do
+  mnist <- load
+  let scene :: Float -> Picture
+      scene x = scale 25.0 25.0 . toPicture' . mnistImage mnist . round $ x
+  animate (InWindow "Digit Window" (200, 200) (10, 10)) black scene
+
+toPicture' :: GrayImage -> Picture
+toPicture' img = bitmapOfByteString 28 28 (BitmapFormat TopToBottom PxRGBA)
+                ( B.pack
+                . concat
+                . map (\ x -> [ x, x, x, 255 ])
+                . B.unpack
+                $ img ) False
+                
+toPicture :: FloatImage -> Picture
+toPicture img = bitmapOfByteString 28 28 (BitmapFormat TopToBottom PxRGBA)
+                ( B.pack
+                . concat
+                . map (\ x -> [ x, x, x, 255 ])
+                . map round
+                . V.toList
+                $ img ) False
+                
+toArray :: Int -> Int -> [GrayImage] -> Picture
+toArray nx ny xs =
+  translate (fromIntegral (0 - nx*28) / 2.0) (fromIntegral (0 - ny*28) / 2.0) $
+    Pictures [ Translate (fromIntegral $ x * 28) (fromIntegral $ y * 28) . toPicture' $ (xs !! (ny*y + x))
+             | x <- [0 .. nx - 1]
+             , y <- [0 .. ny - 1]
+             ]
+
+testGraphics2 :: [Int] -> IO ()
+testGraphics2 xs = do
+  mnist <- load
+  let xs = map (mnistImage mnist) [0..60000-1]
+  let scene :: Float -> Picture
+      scene x = scale 25.0 25.0 . toPicture' . mnistImage mnist . round $ x
+  -- animate (InWindow "Digit Window" (200, 200) (10, 10)) black scene
+  display (InWindow "Digit Window" (200, 200) (10, 10)) black (toArray 40 20 xs)
+
+testGraphics3 :: IO ()
+testGraphics3 = do
+  let nx = 40
+      ny = 25
+      n  = nx * ny
+  mnist <- load
+  let xs = V.fromList $ (map (mnistImage mnist) [0..60000-1] ++ replicate n (mnistImage mnist (60000-1)))
+      offset = 0
+  play (InWindow "Digit Window" (200, 200) (10, 10)) black 1 offset
+       (\ offset -> toArray nx ny (V.toList (V.slice offset n xs)))
+       (\ _ offset -> (offset + n) `rem` 60000)
+       (\ _ offset -> offset)
