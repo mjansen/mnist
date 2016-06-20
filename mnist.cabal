@@ -19,8 +19,8 @@ executable mnist
   main-is:             Main.hs
   -- other-modules:       
   -- other-extensions:    
-  build-depends:       base, bytestring, filepath, directory, vector, JuicyPixels
+  build-depends:       base, bytestring, filepath, directory, vector, JuicyPixels, gloss, GLUT, bmp
   -- hs-source-dirs:      
   default-language:    Haskell2010
-  ghc-options:         -O2
+  ghc-options:         -O2 -threaded -rtsopts
   
