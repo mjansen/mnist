@@ -1,3 +1,4 @@
+import Data.Bool
 import Data.Word
 
 import Control.Concurrent
@@ -22,21 +23,32 @@ type Label     = Word8
 type GrayImage = B.ByteString
 
 data MNIST = MNIST
-  { nrOfImages :: Int
-  , imgWidth   :: Int
-  , imgHeight  :: Int
-  , mnistLabel :: Int -> Label
-  , mnistImage :: Int -> GrayImage
+  { mnistNrOfImages :: Int
+  , imgWidth        :: Int
+  , imgHeight       :: Int
+  , mnistLabel      :: Int -> Label
+  , mnistImage      :: Int -> GrayImage
   }
 
-load :: IO MNIST
-load = do
-  trldata <- B.readFile "train-labels-idx1-ubyte"
-  tridata <- B.readFile "train-images-idx3-ubyte"
+load :: FilePath -> FilePath -> IO MNIST
+load iFile lFile = do
+  let iw = 28
+      ih = 28
+      is = iw*ih
+  trldata <- B.readFile lFile
+  tridata <- B.readFile iFile
   let trldata' = B.drop  8 trldata
       tridata' = B.drop 16 tridata
-  return $ MNIST 60000 28 28 (\ i -> trldata' `B.index` i) (\ i -> B.take (28*28) . B.drop (i*28*28) $ tridata' )
-  
+      sz = B.length trldata'
+  bool (error "sizes do not match") (return ()) (is * sz == B.length tridata')
+  return $ MNIST sz iw ih (\ i -> trldata' `B.index` i) (\ i -> B.take is . B.drop (i*is) $ tridata' )
+
+loadTrainingSet :: IO MNIST
+loadTrainingSet = load "train-images-idx3-ubyte" "train-labels-idx1-ubyte"
+
+loadTestSet :: IO MNIST
+loadTestSet = load "t10k-images-idx3-ubyte" "t10k-labels-idx1-ubyte"
+
 --------------------------------------------------------------------------------
 
 toImage :: Int -> GrayImage -> P.Image P.Pixel8
@@ -50,19 +62,19 @@ writeToFile str = do
   let fName = dir </> "digit.png"
   L.writeFile (fName <.> "part") . P.encodePng . toImage 20 $ str
   renameFile (fName <.> "part") fName
-  
+
 writeAll :: IO ()
 writeAll = do
-  mnist <- load
+  mnist <- loadTrainingSet
   cycleThroughImages . map (mnistImage mnist)
                      . filter ((== 2) . mnistLabel mnist)
-                     $ [0..60000-1]
+                     $ [0.. mnistNrOfImages mnist - 1]
 
 cycleThroughImages :: [GrayImage] -> IO ()
 cycleThroughImages xs = do
   mapM_ (\ img -> threadDelay 1000000 >> writeToFile img) $ xs
   cycleThroughImages xs
-  
+
 --------------------------------------------------------------------------------
 
 type FloatImage = V.Vector Double
@@ -91,7 +103,7 @@ average'' :: MNIST -> [Int] -> FloatImage
 average'' mnist xs = average . map (toFloatImage . mnistImage mnist) $ xs
 
 onlyLabel :: Label -> MNIST -> [Int]
-onlyLabel x mnist = filter ((== x) . mnistLabel mnist) [0..60000-1]
+onlyLabel x mnist = filter ((== x) . mnistLabel mnist) [0.. mnistNrOfImages mnist - 1]
 
 computeAverages' :: MNIST -> [GrayImage]
 computeAverages' mnist = map (\ x -> average' mnist . onlyLabel x $ mnist) [0..9]
@@ -104,20 +116,21 @@ computeAverages mnist = map (\ x -> average'' mnist . onlyLabel x $ mnist) [0..9
 main :: IO ()
 main = do
   args <- getArgs
+  mnist <- loadTrainingSet
   case args of
-    [ "average" ] -> cycleThroughImages . computeAverages' =<< load
-    [ "simple"  ] -> testInnerProduct
-    [ "testGraphics1" ] -> testGraphics1 [0..60000-1]
-    [ "testGraphics2" ] -> testGraphics2 [0..60000-1]
-    [ "testGraphics3" ] -> testGraphics3
+    [ "average"       ] -> cycleThroughImages . computeAverages' $ mnist
+    [ "simple"        ] -> testInnerProduct mnist
+    [ "testGraphics1" ] -> testGraphics1 mnist [0.. mnistNrOfImages mnist - 1]
+    [ "testGraphics2" ] -> testGraphics2 mnist [0.. mnistNrOfImages mnist - 1]
+    [ "testGraphics3" ] -> testGraphics3 mnist
 
 --------------------------------------------------------------------------------
 
 innerProduct :: FloatImage -> FloatImage -> Double
 innerProduct i1 i2 = V.foldr (+) 0 (V.zipWith (*) i1 i2)
 
-testInnerProduct = do
-  mnist <- load
+testInnerProduct :: MNIST -> IO ()
+testInnerProduct mnist = do
   let as = computeAverages mnist
       rs d = map (\ i -> toFloatImage . mnistImage mnist $ i) . onlyLabel d $ mnist
       zs = [ (print (x, d, statistics . map (innerProduct (as!!x)) $ rs d)) | x <- [0..9], d <- [0..9] ]
@@ -138,15 +151,14 @@ data Statistics = Statistics
   { st_populationMean      :: Double
   , st_populationDeviation :: Double
   } deriving Show
-  
+
 statistics :: [Double] -> Statistics
 statistics xs = Statistics (mean xs) (deviation xs)
 
 --------------------------------------------------------------------------------
 
-testGraphics1 :: [Int] -> IO ()
-testGraphics1 xs = do
-  mnist <- load
+testGraphics1 :: MNIST -> [Int] -> IO ()
+testGraphics1 mnist xs = do
   let scene :: Float -> Picture
       scene x = scale 25.0 25.0 . toPicture' . mnistImage mnist . round $ x
   animate (InWindow "Digit Window" (200, 200) (10, 10)) black scene
@@ -158,7 +170,7 @@ toPicture' img = bitmapOfByteString 28 28 (BitmapFormat TopToBottom PxRGBA)
                 . map (\ x -> [ x, x, x, 255 ])
                 . B.unpack
                 $ img ) False
-                
+
 toPicture :: FloatImage -> Picture
 toPicture img = bitmapOfByteString 28 28 (BitmapFormat TopToBottom PxRGBA)
                 ( B.pack
@@ -167,7 +179,7 @@ toPicture img = bitmapOfByteString 28 28 (BitmapFormat TopToBottom PxRGBA)
                 . map round
                 . V.toList
                 $ img ) False
-                
+
 toArray :: Int -> Int -> [GrayImage] -> Picture
 toArray nx ny xs =
   translate (fromIntegral (0 - nx*28) / 2.0) (fromIntegral (0 - ny*28) / 2.0) $
@@ -176,25 +188,23 @@ toArray nx ny xs =
              , y <- [0 .. ny - 1]
              ]
 
-testGraphics2 :: [Int] -> IO ()
-testGraphics2 xs = do
-  mnist <- load
-  let xs = map (mnistImage mnist) [0..60000-1]
+testGraphics2 :: MNIST -> [Int] -> IO ()
+testGraphics2 mnist xs = do
+  let xs = map (mnistImage mnist) [0.. mnistNrOfImages mnist - 1]
   let scene :: Float -> Picture
       scene x = scale 25.0 25.0 . toPicture' . mnistImage mnist . round $ x
   display (InWindow "Digit Window" (200, 200) (10, 10)) black (toArray 40 20 xs)
 
-testGraphics3 :: IO ()
-testGraphics3 = do
+testGraphics3 :: MNIST -> IO ()
+testGraphics3 mnist = do
   let nx = 40
       ny = 25
       n  = nx * ny
-  mnist <- load
-  let xs = V.fromList $ (map (mnistImage mnist) [0..60000-1] ++ replicate n (mnistImage mnist (60000-1)))
+  let xs = V.fromList $ (map (mnistImage mnist) [0.. mnistNrOfImages mnist - 1] ++ replicate n (mnistImage mnist (mnistNrOfImages mnist - 1)))
       offset = 0
   play (InWindow "Digit Window" (200, 200) (10, 10)) black 1 offset
        (\ offset -> toArray nx ny (V.toList (V.slice offset n xs)))
        (\ e offset -> case e of
-                        EventKey (SpecialKey KeySpace) Up _ _ -> (offset + n) `rem` 60000
+                        EventKey (SpecialKey KeySpace) Up _ _ -> (offset + n) `rem` mnistNrOfImages mnist
                         _                                     -> offset )
        (\ _ offset -> offset)
